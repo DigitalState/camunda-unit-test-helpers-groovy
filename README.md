@@ -257,3 +257,193 @@ Then add the following dependency:
  ```
 
 Note that: Groovy, camunda-bpm-assert are dependencies.
+
+
+
+# Full Example using Spock Framework
+
+```groovy
+package fluentapitest
+
+import io.digitalstate.camunda.unittest.UnitTestingHelpers
+import org.camunda.bpm.engine.runtime.ProcessInstance
+import org.camunda.bpm.engine.test.ProcessEngineRule
+import org.junit.ClassRule
+import spock.lang.Shared
+import spock.lang.Specification
+//brings in Camunda BPM Assertion + AssertJ core.api.Assertions
+// http://joel-costigliola.github.io/assertj/core/api/index.html
+// http://camunda.github.io/camunda-bpm-assert/apidocs/org/camunda/bpm/engine/test/assertions/ProcessEngineTests.html
+// http://joel-costigliola.github.io/assertj/
+import static org.camunda.bpm.engine.test.assertions.ProcessEngineAssertions.assertThat
+import static org.camunda.bpm.engine.test.assertions.ProcessEngineTests.repositoryService
+import static org.camunda.bpm.engine.test.assertions.ProcessEngineTests.runtimeService
+
+class FluentApiBuilderFeatureSpec extends Specification implements BpmnFluentBuilder, UnitTestingHelpers {
+
+    @ClassRule
+    @Shared ProcessEngineRule processEngineRule = new ProcessEngineRule('camunda_config/camunda.cfg.xml')
+
+    def setupSpec(){
+        // setDeploymentFiles() detects if the values are Strings or BpmnModelInstances
+        // and executes the proper parsing.
+        // If the value is a String it expects that the String is a Path to the file.
+        setDeploymentFiles([
+            'model1.bpmn': model3(),
+            'fluentModelScript1.js': '/bpmn/fluentModelScript1.js'
+        ])
+
+        // deployNow() is a new method that has been injected into the metaclass
+        // when setupDeployment() was executed.  deployNow() does the same as deploy()
+        // but it also adds the deploymentId value into the Unit Test Helpers
+        // to save the developer a extra step.
+        setupDeployment().deployNow()
+    }
+
+    def 'Testing Fluent API Builder'() {
+        when: 'Creating a instance of model1 process definition'
+            ProcessInstance processInstance = runtimeService().startProcessInstanceByKey('model')
+
+        then: 'Process is Active'
+            assertThat(processInstance).isActive()
+    }
+
+    def cleanupSpec() {
+        // Several SharedData methods are provided to add data into a static space for reuse
+        // This saves a step of having to build a @Shared variable in the Unit Test's Class
+        String deploymentId = getSharedData('deploymentId')
+
+        // These two methods give you choice about which deployment to save into the build/target directory.
+        // fromCamundaDB will use the deployment files saved into the DB.  Generally you dont want this
+        // when using with tools such as Coverage Generation because the BPMN will not be the
+        // original, but rather a modified version.
+        // The FromSource uses the original un-modified files provided in the setDeploymentFiles() method.
+        exportDeploymentFromCamundaDB()
+        exportDeploymentFromSource()
+
+        repositoryService().deleteDeployment(deploymentId,
+                true, // cascade
+                true, // skipCustomListeners
+                true) // skipIoMappings
+        println "Deployment ID: '${deploymentId}' has been deleted"
+    }
+}
+
+```
+
+The `BpmnFluentBuilder` trait is a helper file for this example to remove the Fluent API code.  
+This is the trait's content:
+
+```groovy
+package fluentapitest
+
+import org.camunda.bpm.model.bpmn.Bpmn
+import org.camunda.bpm.model.bpmn.BpmnModelInstance
+
+trait BpmnFluentBuilder {
+
+    BpmnModelInstance model1(){
+        BpmnModelInstance model = Bpmn.createExecutableProcess('model')
+        .startEvent()
+        .scriptTask()
+            .name('Some Simple Script')
+            .scriptFormat('javascript')
+            .camundaResource('deployment://fluentModelScript1.js')
+        .userTask()
+            .name('placeholder')
+        .endEvent()
+        .done()
+
+        return model
+    }
+
+    BpmnModelInstance model2(){
+        BpmnModelInstance model = Bpmn.createExecutableProcess('model')
+                .name("Reminder Demo")
+                .startEvent()
+                .userTask('readEmail')
+                    .boundaryEvent()
+                        .timerWithDuration("PT1H")
+                        .cancelActivity(false)
+                        .manualTask()
+                            .name('do something')
+                        .endEvent()
+                        .moveToActivity('readEmail')
+                .boundaryEvent()
+                    .timerWithCycle("R3/PT10M")
+                    .manualTask()
+                        .name('do something else')
+                    .endEvent()
+                    .moveToActivity('readEmail')
+                .endEvent()
+                .done()
+        return model
+    }
+
+    BpmnModelInstance model3(){
+        BpmnModelInstance model = Bpmn.createExecutableProcess('model')
+                .name("Reminder Demo")
+                .startEvent()
+                .userTask('readEmail')
+                    .boundaryEvent('killusertask')
+                    .timerWithDuration("PT1H")
+                    .cancelActivity(true)
+                    .moveToActivity('readEmail')
+                .boundaryEvent()
+                    .timerWithCycle("R3/PT10M")
+                    .cancelActivity(false)
+                    .serviceTask()
+                        .name('reminderSent')
+                        .implementation('expression')
+                        .camundaExpression('${1+1}')
+                    .endEvent()
+                    .moveToActivity('readEmail')
+                .manualTask('manual1').name('do something')
+                .moveToNode('killusertask').connectTo('manual1')
+                //.moveToActivity('killusertask').connectTo('manual1') This does not work. Must use the moveToNode()
+                .manualTask('manual2').name('do something else')
+                .endEvent()
+                .done()
+        return model
+    }
+
+
+    BpmnModelInstance model4(){
+        BpmnModelInstance model = Bpmn.createExecutableProcess('model')
+                .startEvent()
+                .subProcess()
+                    .embeddedSubProcess()
+                    .startEvent()
+                    .manualTask()
+                    .userTask("placeOrders")
+                        .name("Place your order at: 1234")
+                        .camundaAssignee("someUser")
+                        .boundaryEvent("killUserTask")
+                            .timerWithDuration("PT1H")
+                            .cancelActivity(true)
+                            .moveToActivity("placeOrders")
+                        .boundaryEvent()
+                            .timerWithCycle("R3/PT10M")
+                            .cancelActivity(false)
+                            .manualTask("reminderIfNeeded")
+                            .endEvent()
+                            .moveToActivity("placeOrders")
+                    .serviceTask("timesUpOrOrderComplete")
+                        .name("timesUpOrOrderComplete")
+                        .implementation("expression")
+                        .camundaExpression("\${1 + 1}")
+                    .moveToNode("killUserTask").connectTo("timesUpOrOrderComplete")
+                    .endEvent()
+                .subProcessDone()
+                    .multiInstance()
+                    .parallel()
+                    .camundaCollection("#{gettingLunch}")
+                    .camundaElementVariable("lunchGetter")
+                    .multiInstanceDone()
+                .endEvent()
+                .done()
+        return model
+    }
+
+}
+```
